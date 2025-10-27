@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>The Battery People Battery Finder — Mobile (Single card, compact + 140x84 image)</title>
+<style>
+:root{
+  --brand:#06b6d4; --brand-dark:#0e7490;
+  --text:#0b1020; --muted:#667085; --bg:#f6f7fb; --card:#ffffff; --ring:#22d3ee;
+  --border:#e5e7eb;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial}
+.container{max-width:880px;margin:0 auto;padding:14px}
+.header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.title{font-weight:800;letter-spacing:.2px;color:var(--brand);font-size:18px}
+#meta{margin-left:auto;font-size:12px;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:0 1px 2px rgba(0,0,0,.04);padding:12px}
+.controls{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.92);backdrop-filter:blur(6px)}
+.controls .row{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:560px){ .controls .row{grid-template-columns:1fr 1fr} }
+@media(min-width:840px){ .controls .row{grid-template-columns:repeat(4,1fr)} }
+.small{font-size:12px;color:var(--muted)}
+select,.input{width:100%;border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:#fff;outline:none;font-size:16px}
+select:focus,.input:focus{border-color:var(--ring);box-shadow:0 0 0 2px rgba(34,211,238,.35)}
+/* Buttons (compact) */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:700;cursor:pointer;
+     width:auto;min-width:auto;padding:5px 8px;font-size:12px;border:1px solid var(--border);border-radius:8px;background:#fff}
+.btn-primary{background:var(--brand);color:white;border-color:#0891b2}
+.btn-primary:active{transform:translateY(1px)}
+.btn[disabled]{opacity:.55;cursor:not-allowed}
+
+/* Results: one card per row */
+.grid{display:grid;gap:10px;margin:12px 0 24px;grid-template-columns: 1fr;}
+
+/* Card 30% smaller vs 2-up baseline */
+.res-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:7px;display:flex;flex-direction:column;gap:5px}
+.res-head{display:flex;gap:5px;align-items:baseline;flex-wrap:wrap}
+.res-title{font-size:14px;font-weight:800}
+.res-sub{font-size:10.5px;color:var(--muted)}
+.badge{font-size:9.5px;line-height:1;display:inline-block;padding:4px 6px;border-radius:999px;background:#ecfeff;color:var(--brand-dark);border:1px solid #a5f3fc}
+.stack{display:grid;gap:8px}
+.row-actions{display:flex;gap:6px;justify-content:flex-start}
+
+/* Image restored to 140x84, centered */
+.thumb-wide{
+  display:block;
+  width: 140px;
+  max-width: 90%;
+  height: 84px;
+  object-fit: contain;
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:8px;
+  margin:4px auto 6px;
+}
+.thumb-hidden{display:none}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">The Battery People Battery Finder</div>
+    <div id="meta" class="small"></div>
+  </div>
+
+  <div class="card controls">
+    <div class="row">
+      <label class="stack">
+        <span class="small">Make</span>
+        <select id="make"></select>
+      </label>
+      <label class="stack">
+        <span class="small">Model</span>
+        <select id="model"></select>
+      </label>
+      <label class="stack">
+        <span class="small">Year</span>
+        <select id="year"></select>
+      </label>
+      <label class="stack">
+        <span class="small">Search</span>
+        <input id="q" class="input" placeholder="Type model/series/engine/fuel"/>
+      </label>
+    </div>
+    <div class="small" id="status" style="margin-top:8px"></div>
+  </div>
+
+  <div id="hint" class="small" style="margin-top:10px">
+    Single-card layout (compact) with image restored to 140×84.
+  </div>
+
+  <div id="results" class="grid"></div>
+</div>
+
+<script>
+const CSV_FILENAME = "Fitment guide complete.csv";
+const PRODUCT_URL_TEMPLATE = "";
+
+const ALIASES = {
+  make: ["make","brand","manufacturer","marque"],
+  model: ["model","model/variant","vehicle","variant","model variant"],
+  series: ["series","trim level"],
+  chassis: ["chassis/gen","chassis","body","generation","platform"],
+  year_from: ["year_from","year from","from","start year"],
+  year_to: ["year_to","year to","to","end year"],
+  year_range: ["year range","years","year","year(s)"],
+  engine: ["engine/trim","engine","trim","engine size","engine code"],
+  fuel: ["fuel","fuel type"],
+  neuton: ["neuton_code","neuton pn","neuton_pn","np","npk","yhi","neuton"],
+  image: ["image","image_url","photo","photo_url","picture","thumbnail","img","img_url","thumb"],
+  product: ["product_url","product","url","link","page","product page","buy","shop"]
+};
+
+function normalizeHeaderMap(headers){
+  const map = {};
+  const lc = headers.map(h => (h||"").toString().trim().replace(/^\ufeff/,'').toLowerCase());
+  function findOne(keys){
+    for(const k of keys){ const i = lc.indexOf(k); if(i !== -1) return headers[i]; }
+    for(let i=0;i<lc.length;i++){ if(keys.some(k => lc[i].includes(k))) return headers[i]; }
+    return null;
+  }
+  map.Make   = findOne(ALIASES.make);
+  map.Model  = findOne(ALIASES.model);
+  map.Series = findOne(ALIASES.series);
+  map.Chassis= findOne(ALIASES.chassis);
+  map.Year_From = findOne(ALIASES.year_from);
+  map.Year_To   = findOne(ALIASES.year_to);
+  map.Year_Range= findOne(ALIASES.year_range);
+  map.Engine = findOne(ALIASES.engine);
+  map.Fuel   = findOne(ALIASES.fuel);
+  map.Neuton = findOne(ALIASES.neuton);
+  map.Image  = findOne(ALIASES.image);
+  map.Product= findOne(ALIASES.product);
+  return map;
+}
+
+const OPEN_REGEX = /\bon\b|onwards?|present|current|today|now|to\s*date|to\-date|till\s*date|\+|→|->|-\s*>\s*$/i;
+
+function parseYears(fromVal, toVal, rangeVal){
+  const clean = s => (s||"").toString().trim();
+  const firstYear = s => { const m = clean(s).match(/\b(19|20)\d{2}\b/); return m ? m[0] : ""; };
+
+  let yf = firstYear(fromVal);
+  let yt = firstYear(toVal);
+  let open = false;
+
+  const rangeText = clean(rangeVal);
+  if(rangeText){
+    const yrs = rangeText.match(/\b(19|20)\d{2}\b/g) || [];
+    if(!yf && yrs.length >= 1) yf = yrs[0];
+    if(!yt && yrs.length >= 2) yt = yrs[yrs.length-1];
+    if(OPEN_REGEX.test(rangeText)) open = true;
+  }
+
+  const combo = clean(toVal);
+  if(!yt && OPEN_REGEX.test(combo)) open = true;
+
+  return { Year_From: yf, Year_To: yt, OpenEnded: open };
+}
+
+function yearInRange(row, y){
+  if(!y || isNaN(y)) return true;
+  const yf = parseInt((row.Year_From||"").replace(/\D/g,''),10);
+  const yt = parseInt((row.Year_To  ||"").replace(/\D/g,''),10);
+  const open = !!row.OpenEnded;
+
+  if(isNaN(yf)) return true;
+  if(open) return y >= yf;
+  if(!isNaN(yt)) return y >= yf && y <= yt;
+  return y === yf;
+}
+
+let ROWS = [];
+const $ = id => document.getElementById(id);
+function tokensOf(q){ return (q||'').toLowerCase().split(/[^a-z0-9.\-]+/).map(t=>t.trim()).filter(Boolean); }
+function setOpts(sel, opts){ const v=sel.value; const uniq=[...new Set(opts)].filter(Boolean).sort();
+  sel.innerHTML = "<option value=''>All</option>" + uniq.map(o=>`<option>${o}</option>`).join("");
+  if(uniq.includes(v)) sel.value=v;
+}
+
+function renderSelectors(){
+  setOpts($("make"), ROWS.map(r=>r.Make));
+  const make = $("make").value;
+  setOpts($("model"), ROWS.filter(r=>!make||r.Make===make).map(r=>r.Model));
+  const years = new Set();
+  const now = new Date().getFullYear();
+  ROWS.filter(r=>!make||r.Make===make).forEach(r=>{
+    const y1 = parseInt((r.Year_From||'').replace(/\D/g,''),10);
+    const y2 = parseInt((r.Year_To||'').replace(/\D/g,''),10);
+    const open = !!r.OpenEnded;
+    if(!isNaN(y1) && (open || !isNaN(y2))){
+      const end = open ? now : y2;
+      for(let y=y1; y<=end; y++) years.add(y);
+    } else if(!isNaN(y1)){
+      years.add(y1);
+    }
+  });
+  setOpts($("year"), Array.from(years));
+}
+
+function productUrlFor(row){
+  const fromCsv = (row.Product||"").trim();
+  if(fromCsv) return fromCsv;
+  if(PRODUCT_URL_TEMPLATE){
+    return PRODUCT_URL_TEMPLATE.replace("{{NEUTON}}", encodeURIComponent(row.Neuton));
+  }
+  return "";
+}
+
+function filteredRows(){
+  const make = $("make").value;
+  const model = $("model").value;
+  const ysel = $("year").value ? parseInt($("year").value,10) : null;
+  const q = tokensOf($("q").value||"");
+  let out = ROWS.slice();
+  if(make)  out = out.filter(r=>r.Make===make);
+  if(model) out = out.filter(r=>r.Model===model);
+  if(ysel)  out = out.filter(r=>yearInRange(r, ysel));
+  if(q.length) out = out.filter(r=>{
+    const hay = `${r.Make} ${r.Model} ${r.Series} ${r.Chassis} ${r.Engine} ${r.Fuel} ${r.Neuton}`.toLowerCase();
+    return q.every(t=>hay.includes(t));
+  });
+  return out;
+}
+
+function render(){
+  const out = filteredRows();
+  document.getElementById("meta").textContent = `Showing ${out.length} matches`;
+  const host = document.getElementById("results");
+  host.innerHTML = "";
+  out.slice(0,600).forEach(r=>{
+    const imgCsv = (r.Image||"").trim();
+    const fallback = "images/" + encodeURIComponent(r.Neuton) + ".jpg";
+    const imgSrc = imgCsv || fallback;
+    const purl = productUrlFor(r);
+    const btn = purl ? `<a class="btn btn-primary" href="${purl}" target="_blank" rel="noopener">View</a>`
+                     : `<button class="btn" disabled title="No product URL">View</button>`;
+
+    const card = document.createElement('div'); 
+    card.className = 'res-card';
+    card.innerHTML = `
+      <div class="res-head">
+        <div class="res-title">${r.Make} • ${r.Model}</div>
+        <span class="badge mono">${r.Neuton}</span>
+      </div>
+      <div class="res-sub">${r.Series? r.Series + " • " : ""}${r.Chassis||""}</div>
+      <div class="res-sub">${r.Year_From||""}${r.Year_To ? "–"+r.Year_To : ""}${r.OpenEnded && !r.Year_To ? "–on" : ""}</div>
+      <div class="res-sub">${r.Engine||""}${r.Fuel ? " • " + r.Fuel : ""}</div>
+      <img class="thumb-wide" alt="Image for ${r.Neuton}" src="${imgSrc}" loading="lazy"
+           onerror="this.classList.add('thumb-hidden')" />
+      <div class="row-actions">${btn}</div>`;
+    host.appendChild(card);
+  });
+}
+["make","model","year"].forEach(id=>$(id).addEventListener("change", ()=>{ renderSelectors(); render(); }));
+$("q").addEventListener("input", render);
+
+function loadCSV(url){
+  document.getElementById("status").textContent = "Loading " + url + " …";
+  Papa.parse(url, {
+    download:true, header:true, skipEmptyLines:true, transformHeader:h=>h.trim(),
+    complete: (res)=>{
+      const headers = res.meta && res.meta.fields ? res.meta.fields : [];
+      const map = normalizeHeaderMap(headers);
+
+      const rows = (res.data||[]).map(r=>{
+        const yrs = parseYears(r[map.Year_From], r[map.Year_To], r[map.Year_Range]);
+        const row = {
+          Make:   (map.Make   ? (r[map.Make]   ||"").trim() : ""),
+          Model:  (map.Model  ? (r[map.Model]  ||"").trim() : ""),
+          Series: (map.Series ? (r[map.Series] ||"").trim() : ""),
+          Chassis:(map.Chassis? (r[map.Chassis]||"").trim() : ""),
+          Year_From: yrs.Year_From,
+          Year_To:   yrs.Year_To,
+          OpenEnded: yrs.OpenEnded,
+          Engine: (map.Engine ? (r[map.Engine] ||"").trim() : ""),
+          Fuel:   (map.Fuel   ? (r[map.Fuel]   ||"").trim() : ""),
+          Neuton: (map.Neuton ? (r[map.Neuton] ||"").trim() : ""),
+          Image:  (map.Image  ? (r[map.Image]  ||"").trim() : ""),
+          Product:(map.Product? (r[map.Product]||"").trim() : ""),
+        };
+        return row;
+      }).filter(x=>x.Neuton);
+
+      if(!rows.length){
+        document.getElementById("status").innerHTML = '<div class="err">CSV loaded but produced 0 valid rows. Check header names / Neuton column in your file.</div>';
+        return;
+      }
+      ROWS = rows;
+      document.getElementById("status").textContent = `Loaded ${ROWS.length} rows from “${CSV_FILENAME}”`;
+      renderSelectors(); render();
+    },
+    error: (err)=>{ document.getElementById("status").innerHTML = '<div class="err">CSV load error: '+err.message+'</div>'; }
+  });
+}
+
+(function(){
+  const url = CSV_FILENAME.replace(/ /g, "%20");
+  fetch(url, {method:"HEAD"}).then(()=> loadCSV(url)).catch(()=> loadCSV(url));
+})();
+</script>
+</body>
+</html>
